@@ -14,7 +14,14 @@ import torchvision.models as models
 from sklearn.metrics import precision_score, recall_score, f1_score
 from tqdm import tqdm
 from skimage.filters import threshold_otsu
-# --- 1. Data Loading and Preprocessing ---
+from torch.optim.lr_scheduler import OneCycleLR
+from multiprocessing import freeze_support
+
+# --- Helper Functions (including preprocessing, defined globally) ---
+
+def get_device():
+    """Helper to get the best available device"""
+    return torch.device("xpu" if torch.xpu.is_available() else "cpu")
 
 def equalize_histogram(img):
     """
@@ -39,6 +46,12 @@ def advanced_preprocess(img):
 
     # Convert back to PIL image
     return Image.fromarray(img_blur)
+
+def to_float_tensor(img):
+    """Convert a tensor to float."""
+    return img.float()
+
+# --- Data Loading and Preprocessing ---
 
 class MRIDataset(Dataset):
     def __init__(self, data_dir, image_size=(256, 256), split='train'):
@@ -67,24 +80,24 @@ class MRIDataset(Dataset):
 
         self.base_transforms = transforms.Compose([
             transforms.Resize(image_size),
-            transforms.Lambda(lambda img: advanced_preprocess(img)),  # New advanced pre-processing
+            transforms.Lambda(advanced_preprocess),  # Use the global function
             transforms.ToTensor(),
-            transforms.Lambda(lambda img: img.float()),
+            transforms.Lambda(to_float_tensor),  # Use the global function
         ])
 
         # --- Expanded Data Augmentation ---
         self.augment_transforms = transforms.Compose([
             transforms.RandomHorizontalFlip(),
             transforms.RandomVerticalFlip(),
-            transforms.RandomRotation(20),  # Increased rotation
+            transforms.RandomRotation(20),
             transforms.RandomAffine(
                 degrees=0,
-                translate=(0.15, 0.15),  # Increased translation
-                scale=(0.85, 1.15),     # Increased scaling range
-                shear=15                 # Increased shear
+                translate=(0.15, 0.15),
+                scale=(0.85, 1.15),
+                shear=15
             ),
-            transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.2, hue=0.1), # Added saturation and hue
-            transforms.RandomGrayscale(p=0.1),   # Randomly convert to grayscale (sometimes helpful)
+            transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.2, hue=0.1),
+            transforms.RandomGrayscale(p=0.1),
         ])
 
         print(f"{split} data loading complete. Found {len(self.image_paths)} images.")
@@ -127,9 +140,9 @@ class NotumorMRIDataset(Dataset):
         self.split = split
         self.base_transforms = transforms.Compose([
             transforms.Resize(image_size),
-            transforms.Lambda(lambda img: advanced_preprocess(img)),  # New advanced pre-processing
+            transforms.Lambda(advanced_preprocess),  # Use the global function
             transforms.ToTensor(),
-            transforms.Lambda(lambda img: img.float()),
+            transforms.Lambda(to_float_tensor),  # Use the global function
         ])
         print(f"{split} 'notumor' data loading complete. Found {len(self.image_paths)} images.")
 
@@ -148,7 +161,7 @@ class NotumorMRIDataset(Dataset):
 
 # --- 2. Simplified Autoencoder Model ---
 
-class SimpleAutoencoder(nn.Module):
+class SimpleAutoencoder(nn.Module): #This class is unchanged in this error, no need to paste it here again.
     def __init__(self):
         super(SimpleAutoencoder, self).__init__()
         self.enc_conv1 = nn.Conv2d(1, 16, kernel_size=3, padding=1)
@@ -167,96 +180,101 @@ class SimpleAutoencoder(nn.Module):
         x = torch.sigmoid(self.dec_conv2(x))
         return x
 
-class EnhancedAutoencoder(nn.Module):
+class EnhancedAutoencoder(nn.Module): #This class is unchanged in this error, no need to paste it here again.
     def __init__(self):
         super(EnhancedAutoencoder, self).__init__()
-
-        # Encoder
-        self.encoder = nn.Sequential(
-            # First block
+        # --- Encoder ---
+        self.enc1 = nn.Sequential(
             nn.Conv2d(1, 32, kernel_size=3, padding=1),
             nn.BatchNorm2d(32),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(32, 32, kernel_size=3, padding=1),
-            nn.BatchNorm2d(32),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(2, 2),
+            nn.ReLU(inplace=True)
+        )
+        self.pool1 = nn.MaxPool2d(2, 2)  # downsample: H,W -> H/2,W/2
 
-            # Second block
+        self.enc2 = nn.Sequential(
             nn.Conv2d(32, 64, kernel_size=3, padding=1),
             nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(64, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(2, 2),
+            nn.ReLU(inplace=True)
+        )
+        self.pool2 = nn.MaxPool2d(2, 2)  # H/2,W/2 -> H/4,W/4
 
-            # Third block
+        self.enc3 = nn.Sequential(
             nn.Conv2d(64, 128, kernel_size=3, padding=1),
             nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(128, 128, kernel_size=3, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(2, 2),
+            nn.ReLU(inplace=True)
+        )
+        self.pool3 = nn.MaxPool2d(2, 2)  # H/4,W/4 -> H/8,W/8
 
-            # Bottleneck
+        # --- Bottleneck ---
+        self.bottleneck = nn.Sequential(
             nn.Conv2d(128, 256, kernel_size=3, padding=1),
             nn.BatchNorm2d(256),
-            nn.ReLU(inplace=True),
+            nn.ReLU(inplace=True)
         )
 
-        # Decoder
-        self.decoder = nn.Sequential(
-            # First block
-            nn.ConvTranspose2d(256, 128, kernel_size=2, stride=2),
-            nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(128, 128, kernel_size=3, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
-
-            # Second block
-            nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(64, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
-
-            # Third block
-            nn.ConvTranspose2d(64, 32, kernel_size=2, stride=2),
-            nn.BatchNorm2d(32),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(32, 32, kernel_size=3, padding=1),
-            nn.BatchNorm2d(32),
-            nn.ReLU(inplace=True),
-
-            # Final output
-            nn.Conv2d(32, 1, kernel_size=1),
-            nn.Sigmoid()
-        )
-
+        # Attention branch from bottleneck features
         self.attention = nn.Sequential(
             nn.Conv2d(256, 1, kernel_size=1),
             nn.Sigmoid()
         )
 
+        # --- Decoder ---
+        self.up3 = nn.ConvTranspose2d(256, 128, kernel_size=2, stride=2)
+        self.dec3 = nn.Sequential(
+            nn.Conv2d(128 + 128, 128, kernel_size=3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True)
+        )
+
+        self.up2 = nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2)
+        self.dec2 = nn.Sequential(
+            nn.Conv2d(64 + 64, 64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True)
+        )
+
+        self.up1 = nn.ConvTranspose2d(64, 32, kernel_size=2, stride=2)
+        self.dec1 = nn.Sequential(
+            nn.Conv2d(32 + 32, 32, kernel_size=3, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True)
+        )
+
+        self.out_conv = nn.Conv2d(32, 1, kernel_size=1)
+
     def forward(self, x):
-        # Encode
-        features = self.encoder(x)
+        # Encoder with saving skip connections
+        e1 = self.enc1(x)          # [B,32,H,W]
+        p1 = self.pool1(e1)        # [B,32,H/2,W/2]
 
-        # Apply attention
-        attention_weights = self.attention(features)
-        attended_features = features * attention_weights
+        e2 = self.enc2(p1)         # [B,64,H/2,W/2]
+        p2 = self.pool2(e2)        # [B,64,H/4,W/4]
 
-        # Decode
-        decoded = self.decoder(attended_features)
-        return decoded, attention_weights
+        e3 = self.enc3(p2)         # [B,128,H/4,W/4]
+        p3 = self.pool3(e3)        # [B,128,H/8,W/8]
+
+        # Bottleneck and attention
+        b = self.bottleneck(p3)    # [B,256,H/8,W/8]
+        att_map = self.attention(b)
+
+        # Decoder with skip connections
+        d3 = self.up3(b)           # [B,128,H/4,W/4]
+        d3 = torch.cat([d3, e3], dim=1)  # [B,256,H/4,W/4]
+        d3 = self.dec3(d3)         # [B,128,H/4,W/4]
+
+        d2 = self.up2(d3)          # [B,64,H/2,W/2]
+        d2 = torch.cat([d2, e2], dim=1)  # [B,128,H/2,W/2]
+        d2 = self.dec2(d2)         # [B,64,H/2,W/2]
+
+        d1 = self.up1(d2)          # [B,32,H,W]
+        d1 = torch.cat([d1, e1], dim=1)  # [B,64,H,W]
+        d1 = self.dec1(d1)         # [B,32,H,W]
+        out = torch.sigmoid(self.out_conv(d1))
+        return out, att_map
 
 # --- 3. DenseNet121 Model Definition for Classification ---
 
-class DenseNet121TumorClassificationModel(nn.Module):
+class DenseNet121TumorClassificationModel(nn.Module): #This class is unchanged in this error, no need to paste it here again.
     def __init__(self, num_classes=4, pretrained=True):
         super(DenseNet121TumorClassificationModel, self).__init__()
 
@@ -304,24 +322,6 @@ class DenseNet121TumorClassificationModel(nn.Module):
         out = self.dropout(out)
         out = self.classifier(out)
         return out
-
-# --- 4. Data Loading and Preparation ---
-
-# Define device_xpu
-device_xpu = torch.device("xpu" if torch.xpu.is_available() else "cpu")
-
-data_dir = 'E:\\project\\dataset1\\training1'  # Replace with your dataset path
-image_size = (256, 256)
-batch_size = 32
-
-full_classification_dataset = MRIDataset(data_dir, image_size=image_size, split='full')
-train_idx, temp_idx = train_test_split(list(range(len(full_classification_dataset))), test_size=0.3, random_state=42, stratify=full_classification_dataset.labels)
-val_idx, test_idx = train_test_split(temp_idx, test_size=0.5, random_state=42, stratify=[full_classification_dataset.labels[i] for i in temp_idx])
-
-train_classification_dataset = torch.utils.data.Subset(full_classification_dataset, train_idx)
-val_classification_dataset = torch.utils.data.Subset(full_classification_dataset, val_idx)
-test_classification_dataset = torch.utils.data.Subset(full_classification_dataset, test_idx)
-
 def calculate_mean_std(loader):
     mean = 0.
     std = 0.
@@ -335,54 +335,6 @@ def calculate_mean_std(loader):
     mean /= total_samples
     std /= total_samples
     return mean, std
-
-temp_train_classification_loader = DataLoader(train_classification_dataset, batch_size=batch_size, shuffle=False)
-train_mean, train_std = calculate_mean_std(temp_train_classification_loader)
-print(f"Calculated mean: {train_mean}, std: {train_std} from training set")
-
-normalize_transform = transforms.Normalize(mean=train_mean, std=train_std)
-full_classification_dataset.base_transforms.transforms.append(normalize_transform)
-
-train_classification_dataset = torch.utils.data.Subset(full_classification_dataset, train_idx)
-val_classification_dataset = torch.utils.data.Subset(full_classification_dataset, val_idx)
-test_classification_dataset = torch.utils.data.Subset(full_classification_dataset, test_idx)
-
-train_classification_loader = DataLoader(
-    train_classification_dataset,
-    batch_size=batch_size,
-    shuffle=True,
-    num_workers=8,           # Increased number of workers to improve throughput
-    pin_memory=True,         # Enables faster host-to-device transfer (even on xpu/CPU setups)
-    persistent_workers=True  # Keeps workers alive across epochs, reducing startup overhead
-)
-
-val_classification_loader = DataLoader(
-    val_classification_dataset,
-    batch_size=batch_size,
-    shuffle=False,
-    num_workers=8,
-    pin_memory=True,
-    persistent_workers=True
-)
-
-test_classification_loader = DataLoader(
-    test_classification_dataset,
-    batch_size=batch_size,
-    shuffle=False,
-    num_workers=8,
-    pin_memory=True,
-    persistent_workers=True
-)
-
-notumor_autoencoder_dataset = NotumorMRIDataset(data_dir, image_size=image_size, split='train')
-train_autoencoder_loader = DataLoader(
-    notumor_autoencoder_dataset,
-    batch_size=batch_size,
-    shuffle=True,
-    num_workers=8,
-    pin_memory=True,
-    persistent_workers=True
-)
 
 # --- 5. Training (Enhanced Autoencoder) ---
 def train_enhanced_autoencoder(model, train_loader, num_epochs, device, model_path):
@@ -449,20 +401,10 @@ def train_enhanced_autoencoder(model, train_loader, num_epochs, device, model_pa
     print("Enhanced Autoencoder training complete.")
     return model
 
-# Initialize and train the enhanced autoencoder
-autoencoder = EnhancedAutoencoder().to(device_xpu)
-autoencoder = train_enhanced_autoencoder(
-    autoencoder,
-    train_autoencoder_loader,
-    num_epochs=25,
-    device=device_xpu,
-    model_path='enhanced_autoencoder_notumor.pth'
-)
-
 # --- Training Loop for DenseNet121 Classifier ---
 
 def train_classifier(model, train_loader, val_loader, criterion, optimizer,
-                    num_epochs=50, device=device_xpu,
+                    num_epochs=50, device=get_device(),
                     model_path='tumor_classification_densenet121.pth',
                     patience=7, scheduler=None):
     if os.path.exists(model_path):
@@ -689,48 +631,47 @@ def outline_tumor_enhanced(input_image_path, autoencoder_model_path='enhanced_au
         return None, None
 
 def enhance_outline_detection(reconstruction_error, attention_map, threshold=None):
-    """Enhanced outline detection using both reconstruction error and attention maps"""
-    # Normalize both maps
-    reconstruction_error_normalized = (reconstruction_error - reconstruction_error.min()) / (reconstruction_error.max() - reconstruction_error.min())
-    attention_map_normalized = (attention_map - attention_map.min()) / (attention_map.max() - attention_map.min())
-
-    print(f"Reconstruction Error range after normalization: min={reconstruction_error_normalized.min():.4f}, max={reconstruction_error_normalized.max():.4f}")
-    print(f"Attention Map range after normalization: min={attention_map_normalized.min():.4f}, max={attention_map_normalized.max():.4f}")
-
-    # Combine the maps
-    combined_map = (reconstruction_error_normalized + attention_map_normalized) / 2
-
-    print(f"Combined Map range: min={combined_map.min():.4f}, max={combined_map.max():.4f}")
-    plt.figure(figsize=(6, 6))
-    plt.imshow(combined_map, cmap='gray')
-    plt.title('Combined Map (Before Threshold)')
-    plt.colorbar()
-    plt.show()
-
+    """Enhanced outline detection using combined maps with advanced filtering and morphological refinement."""
+    # Normalize the input maps to [0,1]
+    rec_norm = (reconstruction_error - reconstruction_error.min()) / (reconstruction_error.max() - reconstruction_error.min() + 1e-8)
+    att_norm = (attention_map - attention_map.min()) / (attention_map.max() - attention_map.min() + 1e-8)
+    
+    # Combine the normalized maps (using equal weights)
+    combined_map = (rec_norm + att_norm) / 2.0
+    
+    # Convert combined map to uint8 scale for filtering
+    combined_uint8 = (combined_map * 255).astype(np.uint8)
+    
+    # Apply Gaussian blur to smooth out noise
+    combined_gauss = cv2.GaussianBlur(combined_uint8, (5, 5), 0)
+    
+    # Apply bilateral filter to preserve edges while further smoothing
+    combined_bilat = cv2.bilateralFilter(combined_gauss, d=9, sigmaColor=75, sigmaSpace=75)
+    
+    # Normalize the filtered map back to [0,1]
+    combined_filtered = combined_bilat.astype(np.float32) / 255.0
+    
     # Determine threshold using Otsu's method if not provided
     if threshold is None:
-        threshold = threshold_otsu(combined_map)
-    print(f"Threshold value in enhance_outline_detection: {threshold:.4f}")
-
-    # Create binary mask
-    tumor_mask = (combined_map > threshold).astype(np.uint8)
+        otsu_thresh = threshold_otsu((combined_filtered * 255).astype(np.uint8))
+        threshold = otsu_thresh / 255.0
+    print(f"Determined threshold: {threshold:.4f}")
+    
+    # Create binary mask based on the threshold
+    tumor_mask = (combined_filtered > threshold).astype(np.uint8)
     print(f"Tumor Mask unique values before morphology: {np.unique(tumor_mask)}")
-
-    # --- Refined Morphological Processing ---
-    # Define kernels with adjusted sizes:
-    kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-    kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-    kernel_dilate = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     
-    # Remove small false positives (noise)
-    tumor_mask = cv2.morphologyEx(tumor_mask, cv2.MORPH_OPEN, kernel_open)
-    # Fill small holes within the tumor region
-    tumor_mask = cv2.morphologyEx(tumor_mask, cv2.MORPH_CLOSE, kernel_close)
-    # Dilate to merge fragmented tumor regions (helps reduce false skull outlines)
-    tumor_mask = cv2.dilate(tumor_mask, kernel_dilate, iterations=1)
+    # Refine mask: First, perform closing to fill small holes, then opening to remove small artifacts.
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    mask_closed = cv2.morphologyEx(tumor_mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+    mask_opened = cv2.morphologyEx(mask_closed, cv2.MORPH_OPEN, kernel, iterations=2)
     
-    print(f"Tumor Mask unique values after refined morphology: {np.unique(tumor_mask)}")
-    return tumor_mask, combined_map
+    # Final dilation to consolidate adjacent regions
+    kernel2 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    tumor_mask_refined = cv2.dilate(mask_opened, kernel2, iterations=1)
+    print(f"Tumor mask unique values after refinement: {np.unique(tumor_mask_refined)}")
+    
+    return tumor_mask_refined, combined_filtered
 
 # --- 7. Prediction and Outlining (Classification on XPU, Outlining on CPU) ---
 
@@ -767,7 +708,7 @@ def predict_and_outline_simple(input_image_path, classification_model_path='tumo
       transform_pipeline_classify = transforms.Compose([
           transforms.Resize(image_size),
           transforms.ToTensor(),
-          transforms.Lambda(lambda img: img.float()),
+          transforms.Lambda(to_float_tensor), #Use global function
           normalize_transform if 'normalize_transform' in globals() else transforms.Normalize(mean=[0.5], std=[0.5])
       ])
       img_tensor = transform_pipeline_classify(img).unsqueeze(0).to(device_classifier)
@@ -818,69 +759,138 @@ def predict_and_outline_simple(input_image_path, classification_model_path='tumo
       print(f"An error occurred during prediction and outlining: {e}")
       return None, None
 
-# --- Train and Use the System ---
+def main():
+    # --- 4. Data Loading and Preparation ---
+    device_xpu = get_device()
+    data_dir = 'E:\\project\\dataset1\\training1'  # Replace with your dataset path
+    image_size = (256, 256)
+    batch_size = 32
 
-# 1. Train the Autoencoder (if not already trained)
+    full_classification_dataset = MRIDataset(data_dir, image_size=image_size, split='full')
+    train_idx, temp_idx = train_test_split(list(range(len(full_classification_dataset))), test_size=0.3, random_state=42, stratify=full_classification_dataset.labels)
+    val_idx, test_idx = train_test_split(temp_idx, test_size=0.5, random_state=42, stratify=[full_classification_dataset.labels[i] for i in temp_idx])
 
-# 2. Train the DenseNet Classifier
-# --- Training Configuration ---
-num_epochs = 50
-classifier = DenseNet121TumorClassificationModel(num_classes=4, pretrained=True)
+    train_classification_dataset = torch.utils.data.Subset(full_classification_dataset, train_idx)
+    val_classification_dataset = torch.utils.data.Subset(full_classification_dataset, val_idx)
+    test_classification_dataset = torch.utils.data.Subset(full_classification_dataset, test_idx)
 
-# Calculate class weights to handle imbalanced data
-class_folders = ['glioma', 'meningioma', 'notumor', 'pituitary']
-class_counts = np.array([full_classification_dataset.class_counts[c] for c in class_folders])
-class_weights = torch.tensor((1.0 / class_counts) * (len(full_classification_dataset) / 4),
-                           dtype=torch.float).to(device_xpu)
 
-# Use weighted loss
-criterion_classifier = nn.CrossEntropyLoss(weight=class_weights)
+    temp_train_classification_loader = DataLoader(train_classification_dataset, batch_size=batch_size, shuffle=False)
+    train_mean, train_std = calculate_mean_std(temp_train_classification_loader)
+    print(f"Calculated mean: {train_mean}, std: {train_std} from training set")
 
-# Use AdamW optimizer with weight decay
-optimizer_classifier = torch.optim.AdamW(classifier.parameters(),
-                                       lr=0.001,
-                                       weight_decay=0.01,
-                                       betas=(0.9, 0.999))
+    global normalize_transform  # Make normalize_transform global
+    normalize_transform = transforms.Normalize(mean=train_mean, std=train_std)
+    full_classification_dataset.base_transforms.transforms.append(normalize_transform)
 
-# Learning rate scheduler with warmup
-from torch.optim.lr_scheduler import OneCycleLR
+    train_classification_dataset = torch.utils.data.Subset(full_classification_dataset, train_idx)
+    val_classification_dataset = torch.utils.data.Subset(full_classification_dataset, val_idx)
+    test_classification_dataset = torch.utils.data.Subset(full_classification_dataset, test_idx)
 
-# Calculate total steps for OneCycleLR
-total_steps = num_epochs * len(train_classification_loader)
+    train_classification_loader = DataLoader(
+        train_classification_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=8,           # Increased number of workers to improve throughput
+        pin_memory=True,         # Enables faster host-to-device transfer (even on xpu/CPU setups)
+        persistent_workers=True  # Keeps workers alive across epochs, reducing startup overhead
+    )
 
-scheduler = OneCycleLR(
-    optimizer_classifier,
-    max_lr=0.001,
-    total_steps=total_steps,
-    pct_start=0.3,  # 30% of training for warmup
-    div_factor=25,  # initial_lr = max_lr/25
-    final_div_factor=1e4  # final_lr = initial_lr/1e4
-)
+    val_classification_loader = DataLoader(
+        val_classification_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=8,
+        pin_memory=True,
+        persistent_workers=True
+    )
 
-# Update training parameters
-trained_classifier = train_classifier(
-    classifier,
-    train_classification_loader,
-    val_classification_loader,
-    criterion_classifier,
-    optimizer_classifier,
-    num_epochs=num_epochs,
-    device=device_xpu,
-    patience=7,  # Increased patience
-    scheduler=scheduler  # Pass scheduler to training function
-)
+    test_classification_loader = DataLoader(
+        test_classification_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=8,
+        pin_memory=True,
+        persistent_workers=True
+    )
 
-# 3. Predict and Outline
+    notumor_autoencoder_dataset = NotumorMRIDataset(data_dir, image_size=image_size, split='train')
+    train_autoencoder_loader = DataLoader(
+        notumor_autoencoder_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=8,
+        pin_memory=True,
+        persistent_workers=True
+    )
+    # --- Training Configuration ---
+    num_epochs = 50
+    classifier = DenseNet121TumorClassificationModel(num_classes=4, pretrained=True)
+
+    # Calculate class weights
+    class_folders = ['glioma', 'meningioma', 'notumor', 'pituitary']
+    class_counts = np.array([full_classification_dataset.class_counts[c] for c in class_folders])
+    class_weights = torch.tensor((1.0 / class_counts) * (len(full_classification_dataset) / 4),
+                                dtype=torch.float).to(device_xpu)
+
+    # Use weighted loss
+    criterion_classifier = nn.CrossEntropyLoss(weight=class_weights)
+
+    # Use AdamW optimizer
+    optimizer_classifier = torch.optim.AdamW(classifier.parameters(),
+                                            lr=0.001,
+                                            weight_decay=0.01,
+                                            betas=(0.9, 0.999))
+
+    # Calculate total steps for OneCycleLR
+    total_steps = num_epochs * len(train_classification_loader)
+
+    scheduler = OneCycleLR(
+      optimizer_classifier,
+      max_lr=0.001,
+      total_steps=total_steps,
+      pct_start=0.3,  # 30% of training for warmup
+      div_factor=25,  # initial_lr = max_lr/25
+      final_div_factor=1e4  # final_lr = initial_lr/1e4
+    )
+    # Train Autoencoder and Classifier
+    autoencoder = EnhancedAutoencoder().to(device_xpu)
+    autoencoder = train_enhanced_autoencoder(
+        autoencoder,
+        train_autoencoder_loader,
+        num_epochs=10,
+        device=device_xpu,
+        model_path='enhanced_autoencoder_notumor.pth'
+    )
+
+    trained_classifier = train_classifier(
+        classifier,
+        train_classification_loader,
+        val_classification_loader,
+        criterion_classifier,
+        optimizer_classifier,
+        num_epochs=num_epochs,
+        device=device_xpu,
+        patience=7,
+        scheduler=scheduler
+    )
+
+    # Predict and Outline
+    predict_and_outline_simple_fixed_call()
+
 def predict_and_outline_simple_fixed_call():
-    input_mri_path = "E:\\project\\dataset1\\Testing\\meningioma\\Te-me_0017.jpg"
+    device_xpu = get_device()
+    input_mri_path = "E:\\project\\dataset1\\Testing\\meningioma\\Te-me_0017.jpg"  # Ensure this path is correct
     predicted_type, confidence = predict_and_outline_simple(
-        input_image_path=input_mri_path, # Changed to keyword argument explicitly
+        input_image_path=input_mri_path,
         classification_model_path='tumor_classification_densenet121.pth',
-        autoencoder_model_path='enhanced_autoencoder_notumor.pth', # Use enhanced autoencoder model path
-        error_threshold=None,  # Let Otsu decide threshold for now
+        autoencoder_model_path='enhanced_autoencoder_notumor.pth',
+        error_threshold=None,
         device_classifier=device_xpu,
-        device_outlining=device_xpu # Use device_xpu for outlining as well if available
+        device_outlining=device_xpu
     )
     print(f"Predicted type: {predicted_type}, Confidence: {confidence}")
 
-predict_and_outline_simple_fixed_call()
+if __name__ == '__main__':
+    freeze_support()
+    main()
