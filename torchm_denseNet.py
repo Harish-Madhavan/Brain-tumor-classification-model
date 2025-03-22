@@ -406,7 +406,7 @@ def train_enhanced_autoencoder(model, train_loader, num_epochs, device, model_pa
 def train_classifier(model, train_loader, val_loader, criterion, optimizer,
                     num_epochs=50, device=get_device(),
                     model_path='tumor_classification_densenet121.pth',
-                    patience=7, scheduler=None):
+                    scheduler=None):  # Removed patience
     if os.path.exists(model_path):
         print("Loading the saved model")
         model.load_state_dict(torch.load(model_path))
@@ -414,7 +414,6 @@ def train_classifier(model, train_loader, val_loader, criterion, optimizer,
 
     model.to(device)
     best_val_loss = float('inf')
-    epochs_no_improve = 0  # For early stopping
 
     # --- Learning Rate Scheduler ---
     if scheduler is None:
@@ -458,7 +457,6 @@ def train_classifier(model, train_loader, val_loader, criterion, optimizer,
         all_labels_val = []
         all_preds_val = []
 
-
         with torch.no_grad():
             for images, labels in tqdm(val_loader, desc=f"Epoch {epoch+1}/{num_epochs} [Val]"):
                 images, labels = images.to(device), labels.to(device)
@@ -470,14 +468,11 @@ def train_classifier(model, train_loader, val_loader, criterion, optimizer,
                 all_labels_val.extend(labels.cpu().numpy())
                 all_preds_val.extend(predicted.cpu().numpy())
 
-
         avg_val_loss = val_loss / len(val_loader.dataset)
         val_accuracy = (np.array(all_preds_val) == np.array(all_labels_val)).mean() * 100
         val_precision = precision_score(all_labels_val, all_preds_val, average='weighted', zero_division=0)
         val_recall = recall_score(all_labels_val, all_preds_val, average='weighted', zero_division=0)
         val_f1 = f1_score(all_labels_val, all_preds_val, average='weighted', zero_division=0)
-
-
 
         print(f'Epoch {epoch+1}/{num_epochs}, Train Loss: {avg_train_loss:.4f}, Train Acc: {train_accuracy:.2f}%, Train Precision: {train_precision:.2f}, Train Recall: {train_recall:.2f}, Train F1: {train_f1:.2f}, Val Loss: {avg_val_loss:.4f}, Val Acc: {val_accuracy:.2f}%, Val Precision: {val_precision:.2f}, Val Recall: {val_recall:.2f}, Val F1: {val_f1:.2f}')
 
@@ -487,17 +482,11 @@ def train_classifier(model, train_loader, val_loader, criterion, optimizer,
         else:
             scheduler.step()
 
-        # --- Save Best Model and Early Stopping ---
+        # --- Save Best Model ---
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
-            epochs_no_improve = 0  # Reset counter
             torch.save(model.state_dict(), model_path)
             print(f"Model saved at epoch {epoch+1} with Val Loss: {best_val_loss:.4f}")
-        else:
-            epochs_no_improve += 1
-            if epochs_no_improve == patience:
-                print(f'Early stopping triggered after {patience} epochs with no improvement.')
-                break  # Stop training
 
     return model
 
@@ -582,7 +571,7 @@ def outline_tumor_enhanced(input_image_path, autoencoder_model_path='enhanced_au
             overlay = outlined_image_np.copy()
 
             # Draw only top 3 largest valid contours - same as before
-            for i, contour in enumerate(valid_contours[:3]):
+            for i, contour in enumerate(valid_contours[:5]):
                 # Calculate contour area - same as before
                 area = cv2.contourArea(contour)
 
@@ -871,7 +860,6 @@ def main():
         optimizer_classifier,
         num_epochs=num_epochs,
         device=device_xpu,
-        patience=7,
         scheduler=scheduler
     )
 
@@ -880,7 +868,7 @@ def main():
 
 def predict_and_outline_simple_fixed_call():
     device_xpu = get_device()
-    input_mri_path = "E:\\project\\dataset1\\Testing\\meningioma\\Te-me_0017.jpg"  # Ensure this path is correct
+    input_mri_path = "E:\\project\\dataset1\\Testing\\glioma\\Te-gl_0025.jpg"  # Ensure this path is correct
     predicted_type, confidence = predict_and_outline_simple(
         input_image_path=input_mri_path,
         classification_model_path='tumor_classification_densenet121.pth',
