@@ -868,7 +868,7 @@ def main():
 
 def predict_and_outline_simple_fixed_call():
     device_xpu = get_device()
-    input_mri_path = "E:\\project\\dataset1\\Testing\\glioma\\Te-gl_0025.jpg"  # Ensure this path is correct
+    input_mri_path = "E:\\project\\dataset1\\training1\\meningioma\\Te-me_0085.jpg"  # Ensure this path is correct
     predicted_type, confidence = predict_and_outline_simple(
         input_image_path=input_mri_path,
         classification_model_path='tumor_classification_densenet121.pth',
