@@ -782,7 +782,7 @@ def predict_and_outline_simple(input_image_path,
             plt.subplot(1, 2, 2); plt.imshow(np.array(outlined_final_image_pil))
             title = 'Result'
             if predicted_class_name != 'notumor':
-                 is_outlined = np.any(np.array(original_resized_pil) != np.array(outlined_final_image_pil))
+                 is_outlined = original_resized_pil is not outlined_final_image_pil
                  status = "(Outlined)" if is_outlined else "(Outline Failed)"
                  title = f'{predicted_class_name.capitalize()} Detected {status}\nConfidence: {confidence:.2%}'
             else: title = f'No Tumor Detected\nConfidence: {confidence:.2%}'
