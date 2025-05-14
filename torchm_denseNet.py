@@ -1097,7 +1097,7 @@ def main():
     # --- Prediction and Outlining on a Sample Image ---
     print("\n--- Performing Prediction and Outlining on a Sample Image ---")
     # <<< --- CHECK/CHANGE THIS PATH to a valid image --- >>>
-    sample_image_path = "E:\project\dataset1\Testing\glioma\Te-gl_0025.jpg" # Example
+    sample_image_path ="C:\\Users\\Harish\\Downloads\\PituitaryAdenoma.jpeg" # Example
 
     if not os.path.exists(sample_image_path):
         print(f"Error: Sample image not found: {sample_image_path}")
