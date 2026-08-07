@@ -1,0 +1,3 @@
+id,timestamp,filename,patient_name,patient_id,age,gender,pred_class,confidence,tumor_area_cm2,tumor_width_cm,tumor_height_cm,physician_notes,report_path
+3,2026-06-11 20:16:01,Te-piTr_0000.jpg,Alice Smith,MRN-1122,28.0,Female,pituitary,1.0,51.12784999999999,25.415,19.895,Clinical follow-up on pituitary region.,classification_results\diagnostic_report.html
+2,2026-06-11 20:05:57,Te-piTr_0000.jpg,,,,,pituitary,1.0,51.12784999999999,25.415,19.895,,classification_results\diagnostic_report.html
