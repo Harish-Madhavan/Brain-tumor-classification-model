@@ -3,6 +3,7 @@ import datetime
 import uuid
 import io
 import base64
+import html
 
 def generate_diagnostic_report(img_path, pred_name, conf, metrics, original_pil, outlined_pil, gradcam_pil, output_path, device_name,
                                patient_name=None, patient_id=None, age=None, gender=None, physician_notes=None):
@@ -16,7 +17,14 @@ def generate_diagnostic_report(img_path, pred_name, conf, metrics, original_pil,
         
     timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     report_id = uuid.uuid4().hex[:8].upper()
-    filename = os.path.basename(img_path)
+    filename = html.escape(os.path.basename(img_path))
+    safe_pred_name = html.escape(str(pred_name).upper())
+    safe_device_name = html.escape(str(device_name))
+    safe_patient_name = html.escape(str(patient_name)) if patient_name else "Anonymous / Unknown"
+    safe_patient_id = html.escape(str(patient_id)) if patient_id else "N/A"
+    safe_age = html.escape(f"{age} years old") if age else "N/A"
+    safe_gender = html.escape(str(gender)) if gender else "N/A"
+    safe_notes = html.escape(str(physician_notes)) if physician_notes else ""
     
     original_b64 = pil_to_base64(original_pil)
     outlined_b64 = pil_to_base64(outlined_pil)
@@ -81,15 +89,15 @@ def generate_diagnostic_report(img_path, pred_name, conf, metrics, original_pil,
         <table class="meta-table">
             <tr>
                 <td class="label">Patient Name</td>
-                <td>{patient_name if patient_name else "Anonymous / Unknown"}</td>
+                <td>{safe_patient_name}</td>
                 <td class="label">Patient ID</td>
-                <td>{patient_id if patient_id else "N/A"}</td>
+                <td>{safe_patient_id}</td>
             </tr>
             <tr>
                 <td class="label">Age</td>
-                <td>{f"{age} years old" if age else "N/A"}</td>
+                <td>{safe_age}</td>
                 <td class="label">Gender</td>
-                <td>{gender if gender else "N/A"}</td>
+                <td>{safe_gender}</td>
             </tr>
             <tr>
                 <td class="label">Patient Scan File</td>
@@ -99,7 +107,7 @@ def generate_diagnostic_report(img_path, pred_name, conf, metrics, original_pil,
             </tr>
             <tr>
                 <td class="label">Hardware Device</td>
-                <td>{device_name}</td>
+                <td>{safe_device_name}</td>
                 <td class="label">Localization Mode</td>
                 <td>Dual (SSIM AE + Grad-CAM)</td>
             </tr>
@@ -107,7 +115,7 @@ def generate_diagnostic_report(img_path, pred_name, conf, metrics, original_pil,
 
         <div class="diagnosis-box">
             <h2>Primary Diagnosis Classification</h2>
-            <p>Detected Class: <span style="color: #c0392b; font-weight: bold; font-size: 18px;">{pred_name.upper()}</span> with <span style="font-weight: bold;">{conf:.2%}</span> classification confidence.</p>
+            <p>Detected Class: <span style="color: #c0392b; font-weight: bold; font-size: 18px;">{safe_pred_name}</span> with <span style="font-weight: bold;">{conf:.2%}</span> classification confidence.</p>
         </div>
 
         <h3 style="color: #2c3e50; border-bottom: 2px solid #f2f2f2; padding-bottom: 8px; margin-bottom: 20px;">Estimated Tumor Metrics</h3>
@@ -128,8 +136,8 @@ def generate_diagnostic_report(img_path, pred_name, conf, metrics, original_pil,
 
         {f"""<div style="background-color: #fdfefe; border-left: 6px solid #7f8c8d; padding: 15px 20px; border-radius: 4px; margin-bottom: 35px; border: 1px solid #e1e8ed; border-left-width: 6px;">
             <h4 style="margin: 0 0 8px 0; color: #34495e; font-size: 15px;">Physician Observations / Radiologist Notes:</h4>
-            <p style="margin: 0; font-size: 14px; color: #5d6d7e; line-height: 1.4; white-space: pre-wrap;">{physician_notes}</p>
-        </div>""" if physician_notes else ""}
+            <p style="margin: 0; font-size: 14px; color: #5d6d7e; line-height: 1.4; white-space: pre-wrap;">{safe_notes}</p>
+        </div>""" if safe_notes else ""}
 
         <h3 style="color: #2c3e50; border-bottom: 2px solid #f2f2f2; padding-bottom: 8px; margin-bottom: 20px;">Visual Interpretability Panels</h3>
         <div class="images-container">

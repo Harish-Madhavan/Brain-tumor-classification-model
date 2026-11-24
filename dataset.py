@@ -4,10 +4,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 from torchvision import transforms
-from PIL import Image, ImageOps
-
-def equalize_histogram(img):
-    return ImageOps.equalize(img)
+from PIL import Image
 
 # Reuse a single CLAHE object per process (cv2.createCLAHE is expensive).
 _CLAHE = None
@@ -99,17 +96,19 @@ class MRIDataset(Dataset):
             if not os.path.isdir(class_dir):
                 print(f"Warning: Class directory not found: {class_dir}")
                 continue
-            for filename in os.listdir(class_dir):
+            for filename in sorted(os.listdir(class_dir)):
                 if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.tiff', '.bmp')):
                     self.image_paths.append(os.path.join(class_dir, filename))
                     self.labels.append(self.class_labels_map[class_folder])
-                    self.class_counts[class_folder] += 1
 
         # Optional deterministic subset (used for stratified train/val/test splits).
         # This fixes the previous bug where train/val/test all loaded the full dataset.
         if indices is not None:
             self.image_paths = [self.image_paths[i] for i in indices]
             self.labels = [self.labels[i] for i in indices]
+
+        for lbl in self.labels:
+            self.class_counts[class_folders[lbl]] += 1
                     
         self.image_size = image_size
         self.split = split
@@ -155,8 +154,8 @@ class NotumorMRIDataset(Dataset):
         self.image_paths = []
         notumor_dir = os.path.join(data_dir, 'notumor')
         if os.path.isdir(notumor_dir):
-            for filename in os.listdir(notumor_dir):
-                if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
+            for filename in sorted(os.listdir(notumor_dir)):
+                if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.tiff', '.bmp')):
                     self.image_paths.append(os.path.join(notumor_dir, filename))
         if indices is not None:
             self.image_paths = [self.image_paths[i] for i in indices]
@@ -183,7 +182,9 @@ class NotumorMRIDataset(Dataset):
                 image = self.augment_ae(image)
             return image, image
         except Exception:
-            return torch.zeros((1, self.image_size[0], self.image_size[1])), torch.zeros((1, self.image_size[0], self.image_size[1]))
+            zeros = torch.zeros((1, self.image_size[0], self.image_size[1]), dtype=torch.float)
+            sentinel = torch.full((1, self.image_size[0], self.image_size[1]), -1.0, dtype=torch.float)
+            return zeros, sentinel
 
 
 def seed_everything(seed=42):

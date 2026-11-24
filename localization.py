@@ -30,7 +30,7 @@ def enhance_outline_detection(rec_err, att_map, threshold=None, min_solidity=0.6
             valid_contours.append(c)
     return mask, (combined.astype(np.float32) / 255.0), valid_contours
 
-def outline_tumor_enhanced(orig_pil, in_tensor, recon_tensor, att_tensor, size, err_thresh, solidity, show_plots):
+def outline_tumor_enhanced(orig_pil, in_tensor, recon_tensor, att_tensor, size, err_thresh, solidity, show_plots, pixel_spacing_mm=1.15):
     # .float() first: XPU/CUDA autocast (bf16/fp16) tensors can't convert to numpy directly.
     in_np = in_tensor.squeeze().float().cpu().numpy()
     recon_np = recon_tensor.squeeze().float().cpu().numpy()
@@ -50,7 +50,6 @@ def outline_tumor_enhanced(orig_pil, in_tensor, recon_tensor, att_tensor, size, 
         cv2.addWeighted(overlay, 0.3, outlined_img, 0.7, 0, outlined_img)
         cv2.drawContours(outlined_img, contours, -1, (255, 0, 0), 2)
         
-    pixel_spacing_mm = 1.15
     pixel_to_cm = pixel_spacing_mm / 10.0
     
     total_area_px = 0.0

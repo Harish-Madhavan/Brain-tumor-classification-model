@@ -170,7 +170,9 @@ def plot_misclassified_examples(y_true, y_pred, images_tensor, class_names, mean
     if save_path: plt.savefig(save_path); print(f"Misclassified examples saved to {save_path}")
     plt.close(fig)
 
-def train_enhanced_autoencoder(model, train_loader, num_epochs, device, model_path, attention_weight, ssim_weight, use_amp=True, amp_dtype=None, channels_last=True):
+def train_enhanced_autoencoder(model, train_loader, num_epochs, device, model_path, attention_weight, ssim_weight,
+                               use_amp=True, amp_dtype=None, channels_last=True,
+                               val_loader=None, early_stop_patience=6):
     eff_dtype = _amp_dtype_for(device, override=amp_dtype) if use_amp else None
     print(f"\n--- Training Enhanced Autoencoder for {num_epochs} Epochs (AMP={use_amp} dtype={eff_dtype} backend={device.type}) ---")
     _enable_speed_flags(device)
@@ -179,11 +181,16 @@ def train_enhanced_autoencoder(model, train_loader, num_epochs, device, model_pa
     scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3)
     scaler = _make_scaler(device, enabled=use_amp, amp_dtype=amp_dtype)
     best_loss = float('inf')
+    epochs_no_improve = 0
 
     for epoch in range(num_epochs):
-        model.train(); train_loss = 0.0
-        for data, _ in tqdm(train_loader, desc=f"AE Epoch {epoch+1}/{num_epochs}"):
-            inputs = _to_device_nchw(data, device, channels_last=channels_last)
+        model.train(); train_loss = 0.0; valid_samples = 0
+        for data, targets in tqdm(train_loader, desc=f"AE Epoch {epoch+1}/{num_epochs}"):
+            # Skip corrupt samples surfaced with -1.0 sentinel by NotumorMRIDataset
+            valid = targets[:, 0, 0, 0] >= 0
+            if not bool(valid.any()):
+                continue
+            inputs = _to_device_nchw(data[valid], device, channels_last=channels_last)
             optimizer.zero_grad(set_to_none=True)
             with _autocast_ctx(device, enabled=use_amp, amp_dtype=amp_dtype):
                 reconstructed, att_map = model(inputs)
@@ -203,16 +210,48 @@ def train_enhanced_autoencoder(model, train_loader, num_epochs, device, model_pa
                 loss.backward()
                 optimizer.step()
             train_loss += loss.item() * inputs.size(0)
+            valid_samples += inputs.size(0)
 
-        epoch_loss = train_loss / max(1, len(train_loader.dataset))
-        print(f"Epoch [{epoch+1}/{num_epochs}] AE Loss: {epoch_loss:.6f}")
-        scheduler.step(epoch_loss)
+        epoch_loss = train_loss / max(1, valid_samples)
+
+        monitored_loss = epoch_loss
+        if val_loader is not None:
+            model.eval(); val_loss = 0.0; val_samples = 0
+            with torch.no_grad():
+                for data, targets in val_loader:
+                    valid = targets[:, 0, 0, 0] >= 0
+                    if not bool(valid.any()):
+                        continue
+                    inputs = _to_device_nchw(data[valid], device, channels_last=channels_last)
+                    with _autocast_ctx(device, enabled=use_amp, amp_dtype=amp_dtype):
+                        reconstructed, att_map = model(inputs)
+                        l1_loss = nn.L1Loss()(reconstructed, inputs)
+                        ssim_loss = 1.0 - ssim(reconstructed.float(), inputs.float(), data_range=1.0, size_average=True)
+                        att_loss = torch.mean(att_map ** 2)
+                        loss = (1.0 - ssim_weight) * l1_loss + ssim_weight * ssim_loss + attention_weight * att_loss
+                    val_loss += loss.item() * inputs.size(0)
+                    val_samples += inputs.size(0)
+            if val_samples > 0:
+                monitored_loss = val_loss / val_samples
+                print(f"Epoch [{epoch+1}/{num_epochs}] AE Train Loss: {epoch_loss:.6f} | Val Loss: {monitored_loss:.6f}")
+            else:
+                print(f"Epoch [{epoch+1}/{num_epochs}] AE Train Loss: {epoch_loss:.6f}")
+        else:
+            print(f"Epoch [{epoch+1}/{num_epochs}] AE Loss: {epoch_loss:.6f}")
+
+        scheduler.step(monitored_loss)
         _empty_accel_cache(device)
 
-        if epoch_loss < best_loss:
-            best_loss = epoch_loss
+        if monitored_loss < best_loss:
+            best_loss = monitored_loss
+            epochs_no_improve = 0
             torch.save(model.state_dict(), model_path)
             print(f"Saved best autoencoder weights to {model_path}")
+        elif val_loader is not None:
+            epochs_no_improve += 1
+            if epochs_no_improve >= early_stop_patience:
+                print(f"AE early stopping at epoch {epoch+1} (best Val Loss: {best_loss:.6f})")
+                break
 
 def train_classifier(model, train_loader, val_loader, criterion, optimizer, scheduler, num_epochs, device, model_path,
                      use_amp=True, grad_clip=1.0, early_stop_patience=6, mixup_alpha=0.0, amp_dtype=None, channels_last=True):
@@ -260,7 +299,7 @@ def train_classifier(model, train_loader, val_loader, criterion, optimizer, sche
             # For mixup, accuracy vs y_a is approximate; fine for logging
             total += labels.size(0); correct += (predicted == labels).sum().item()
 
-        epoch_loss = running_loss / max(1, len(train_loader.dataset))
+        epoch_loss = running_loss / max(1, total)
         epoch_acc = correct / max(1, total)
         history['train_loss'].append(epoch_loss); history['train_acc'].append(epoch_acc)
 
@@ -280,7 +319,7 @@ def train_classifier(model, train_loader, val_loader, criterion, optimizer, sche
                 _, predicted = torch.max(outputs, 1)
                 val_total += labels.size(0); val_correct += (predicted == labels).sum().item()
 
-        val_epoch_loss = val_loss / max(1, len(val_loader.dataset))
+        val_epoch_loss = val_loss / max(1, val_total)
         val_epoch_acc = val_correct / max(1, val_total)
         history['val_loss'].append(val_epoch_loss); history['val_acc'].append(val_epoch_acc)
 
@@ -305,8 +344,10 @@ def train_classifier(model, train_loader, val_loader, criterion, optimizer, sche
 
     return history
 
-def evaluate_classifier_on_test_set(model, test_loader, device, class_names, train_mean, train_std, results_dir):
+def evaluate_classifier_on_test_set(model, test_loader, device, class_names, train_mean, train_std, results_dir,
+                                    use_amp=True, amp_dtype=None, channels_last=True):
     print("\n--- Evaluating Classifier on Test Set ---")
+    model = _maybe_channels_last(model, device, enabled=channels_last)
     model.eval(); all_preds, all_labels, all_images = [], [], []
     with torch.no_grad():
         for images, labels in test_loader:
@@ -316,7 +357,9 @@ def evaluate_classifier_on_test_set(model, test_loader, device, class_names, tra
             images, labels = images[valid], labels[valid]
             all_images.append(images.cpu())
             all_labels.extend(labels.cpu().numpy())
-            outputs = model(images.to(device, non_blocking=True))
+            inputs = _to_device_nchw(images, device, channels_last=channels_last)
+            with _autocast_ctx(device, enabled=use_amp, amp_dtype=amp_dtype):
+                outputs = model(inputs)
             _, predicted = torch.max(outputs.data, 1)
             all_preds.extend(predicted.cpu().numpy())
             

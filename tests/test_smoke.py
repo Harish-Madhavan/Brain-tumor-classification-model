@@ -109,9 +109,107 @@ def test_mri_dataset_indices_subset(tmp_path):
     assert len(full) == 16
     sub = MRIDataset(str(tmp_path), image_size=(32, 32), split='full', apply_normalize=False, indices=[0, 1, 2])
     assert len(sub) == 3
+    assert sum(sub.class_counts.values()) == 3
     img, label = sub[0]
     assert tuple(img.shape) == (1, 32, 32)
     assert 0 <= int(label) <= 3
+
+
+def test_notumor_dataset_corrupt_image_sentinel(tmp_path):
+    from dataset import NotumorMRIDataset
+    d = tmp_path / 'notumor'
+    d.mkdir()
+    (d / 'corrupt.png').write_bytes(b'not-a-valid-image')
+    ds = NotumorMRIDataset(str(tmp_path), image_size=(32, 32), split='train')
+    img, target = ds[0]
+    assert tuple(img.shape) == (1, 32, 32)
+    assert float(target.min()) == -1.0
+
+
+def test_localization_enhance_outline_and_metrics():
+    import numpy as np
+    from localization import outline_tumor_enhanced
+    orig = PIL_Image.new('L', (64, 64), 30)
+    in_t = torch.zeros((1, 64, 64))
+    recon_t = torch.zeros((1, 64, 64))
+    recon_t[0, 20:44, 20:44] = 1.0
+    att_t = torch.zeros((1, 16, 16))
+    att_t[0, 5:11, 5:11] = 1.0
+    _, outlined, metrics_1 = outline_tumor_enhanced(
+        orig, in_t, recon_t, att_t, (64, 64), None, 0.5, show_plots=False, pixel_spacing_mm=1.0
+    )
+    _, _, metrics_2 = outline_tumor_enhanced(
+        orig, in_t, recon_t, att_t, (64, 64), None, 0.5, show_plots=False, pixel_spacing_mm=2.0
+    )
+    assert outlined.size == (64, 64)
+    assert metrics_1['has_tumor'] is True
+    assert np.isclose(metrics_2['width_cm'], 2.0 * metrics_1['width_cm'])
+
+
+def test_gradcam_hook_cleanup_and_overlay():
+    import numpy as np
+    from explainability import GradCAM, get_gradcam_overlay
+    from models import DenseNet121TumorClassificationModel
+    m = DenseNet121TumorClassificationModel(num_classes=4, pretrained=False)
+    m.eval()
+    target = m.densenet121.features.norm5
+    with GradCAM(m, target) as cam:
+        heatmap, out = cam.generate_heatmap(torch.randn(1, 1, 64, 64), class_idx=0)
+        assert len(cam.hooks) == 2
+    assert len(cam.hooks) == 0
+    assert heatmap.shape == (64, 64)
+    assert tuple(out.shape) == (1, 4)
+    overlay = get_gradcam_overlay(PIL_Image.new('L', (64, 64), 128), heatmap)
+    assert overlay.size == (64, 64) and overlay.mode == 'RGB'
+
+
+def test_diagnostic_pipeline_end_to_end():
+    from torchvision import transforms
+    from inference import DiagnosticPipeline
+    from models import DenseNet121TumorClassificationModel, EnhancedAutoencoder
+    clf = DenseNet121TumorClassificationModel(num_classes=4, pretrained=False)
+    ae = EnhancedAutoencoder()
+    norm = transforms.Normalize(mean=[0.5], std=[0.5])
+    pipe = DiagnosticPipeline(clf, ae, (64, 64), norm, torch.device('cpu'), torch.device('cpu'))
+    res = pipe.predict(PIL_Image.new('L', (64, 64), 100), generate_gradcam=True)
+    assert res['pred_name'] in {'glioma', 'meningioma', 'notumor', 'pituitary'}
+    assert 0.0 <= res['confidence'] <= 1.0
+    assert len(res['probs']) == 4
+    assert res['outlined_pil'].size == (64, 64)
+    assert res['gradcam_pil'] is not None
+
+
+def test_model_metadata_roundtrip(tmp_path):
+    from inference import load_model_metadata, save_model_metadata
+    save_model_metadata(str(tmp_path), torch.tensor([0.2]), torch.tensor([0.3]), image_size=(256, 256))
+    meta = load_model_metadata(str(tmp_path))
+    assert meta is not None
+    assert abs(meta['mean'][0] - 0.2) < 1e-6
+    assert abs(meta['std'][0] - 0.3) < 1e-6
+
+
+def test_reporting_escapes_html(tmp_path):
+    from reporting import generate_diagnostic_report
+    orig = PIL_Image.new('L', (64, 64), 128)
+    out = str(tmp_path / 'report_xss.html')
+    generate_diagnostic_report(
+        'scan.png', 'glioma', 0.9,
+        {'total_area_cm2': 1.0, 'width_cm': 1.0, 'height_cm': 1.0, 'has_tumor': True},
+        orig, orig, None, out, 'cpu',
+        patient_name='<script>alert(1)</script>',
+        physician_notes='<b>note</b>'
+    )
+    content = open(out, encoding='utf-8').read()
+    assert '<script>alert(1)</script>' not in content
+    assert '&lt;script&gt;alert(1)&lt;/script&gt;' in content
+
+
+def test_database_delete_nonexistent_returns_false(tmp_path):
+    pytest.importorskip('pandas')
+    from database import delete_diagnostic_record, init_db
+    db = str(tmp_path / 'empty.db')
+    init_db(db)
+    assert delete_diagnostic_record(9999, db_path=db) is False
 
 
 def test_reporting_generates_html(tmp_path):

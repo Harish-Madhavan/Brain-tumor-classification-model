@@ -79,6 +79,8 @@ python -m pytest tests/ -q
 | `--output_dir`| `batch_output` | Output directory for batch results |
 | `--gradcam` | Flag (off by default) | Generate Grad-CAM activation maps in predict/batch modes |
 | `--export_report`| Flag (off by default) | Export printable HTML diagnostic report in predict mode |
+| `--pixel-spacing`| `1.15` | Assumed MRI pixel spacing in mm/pixel for tumor dimension estimates |
+| `--device-outlining`| `auto` (`auto` or `cpu`) | Compute device for autoencoder localization (`auto` matches primary device) |
 | `--epochs` | `15` | Classifier training epochs |
 | `--batch-size` | `32` (AE capped to `16` on XPU) | Training batch size |
 | `--workers` | `0` on XPU/Windows, auto otherwise | DataLoader worker processes |

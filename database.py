@@ -86,11 +86,12 @@ def fetch_diagnostic_records(search_query=None, db_path='patient_records.db'):
 
 def delete_diagnostic_record(record_id, db_path='patient_records.db'):
     try:
+        init_db(db_path)
         with sqlite3.connect(db_path) as conn:
             cursor = conn.cursor()
             cursor.execute("DELETE FROM diagnostic_records WHERE id = ?", (record_id,))
             conn.commit()
-        return True
+            return cursor.rowcount > 0
     except Exception as e:
         print(f"Error deleting diagnostic record {record_id}: {e}")
         return False
@@ -99,7 +100,8 @@ def export_database_csv(db_path='patient_records.db', output_dir='classification
     try:
         df = fetch_diagnostic_records(db_path=db_path)
         os.makedirs(output_dir, exist_ok=True)
-        export_path = os.path.join(output_dir, "patient_database_export.csv")
+        stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        export_path = os.path.join(output_dir, f"patient_database_export_{stamp}.csv")
         df.to_csv(export_path, index=False)
         return export_path
     except Exception as e:
