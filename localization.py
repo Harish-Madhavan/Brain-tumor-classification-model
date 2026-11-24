@@ -31,9 +31,10 @@ def enhance_outline_detection(rec_err, att_map, threshold=None, min_solidity=0.6
     return mask, (combined.astype(np.float32) / 255.0), valid_contours
 
 def outline_tumor_enhanced(orig_pil, in_tensor, recon_tensor, att_tensor, size, err_thresh, solidity, show_plots):
-    in_np = in_tensor.squeeze().cpu().numpy()
-    recon_np = recon_tensor.squeeze().cpu().numpy()
-    att_np = att_tensor.squeeze().cpu().numpy()
+    # .float() first: XPU/CUDA autocast (bf16/fp16) tensors can't convert to numpy directly.
+    in_np = in_tensor.squeeze().float().cpu().numpy()
+    recon_np = recon_tensor.squeeze().float().cpu().numpy()
+    att_np = att_tensor.squeeze().float().cpu().numpy()
     
     orig_resized_np = np.array(orig_pil.resize(size))
     rec_err = np.abs(in_np - recon_np)

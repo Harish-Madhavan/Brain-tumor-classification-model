@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+patient_records.db
+*.pth
+batch_output/
+classification_results/pred_*
+classification_results/gradcam_*
+classification_results/diagnostic_report_*.html
+classification_results/temp_*
+classification_results/patient_database_export.csv
+.training_cache/

@@ -148,6 +148,21 @@ class DenseNet121TumorClassificationModel(nn.Module):
                 nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
+
+    def freeze_backbone(self):
+        """Freeze DenseNet features for head-only warmup (faster + more stable)."""
+        for p in self.densenet121.features.parameters():
+            p.requires_grad = False
+
+    def unfreeze_all(self):
+        for p in self.parameters():
+            p.requires_grad = True
+
+    def backbone_params(self):
+        return list(self.densenet121.features.parameters()) + list(self.cbam.parameters())
+
+    def head_params(self):
+        return list(self.classifier_head.parameters())
                     
     def forward(self, x):
         features = self.cbam(self.densenet121.features(x))

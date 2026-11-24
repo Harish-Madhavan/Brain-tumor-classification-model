@@ -54,6 +54,14 @@ Train both the classifier and autoencoder models:
 ```bash
 python torchm_denseNet.py --mode train --data_dir "training1"
 ```
+Useful training flags: `--epochs 15 --batch-size 32 --workers 0 --mixup 0.2 --seed 42 --no-amp --amp-dtype auto|bf16|fp16 --no-channels-last`.
+On Intel GPUs the built-in `torch.xpu` backend is used automatically (no IPEX needed): AMP defaults to `bfloat16`, `channels_last` is enabled, and loaders default to 0 workers to protect shared system RAM. If you hit `OpenBLAS: Memory allocation failed`, re-run with `--batch-size 16 --workers 0` and close memory-heavy apps.
+
+### 6. Run Tests
+Fast CPU-only smoke tests (no dataset required):
+```bash
+python -m pytest tests/ -q
+```
 
 ---
 
@@ -71,6 +79,14 @@ python torchm_denseNet.py --mode train --data_dir "training1"
 | `--output_dir`| `batch_output` | Output directory for batch results |
 | `--gradcam` | Flag (off by default) | Generate Grad-CAM activation maps in predict/batch modes |
 | `--export_report`| Flag (off by default) | Export printable HTML diagnostic report in predict mode |
+| `--epochs` | `15` | Classifier training epochs |
+| `--batch-size` | `32` (AE capped to `16` on XPU) | Training batch size |
+| `--workers` | `0` on XPU/Windows, auto otherwise | DataLoader worker processes |
+| `--mixup` | `0.0` (try `0.2`) | MixUp alpha for regularization |
+| `--seed` | `42` | Random seed for splits, shuffling, augmentation |
+| `--no-amp` | Flag (AMP on by default) | Disable mixed-precision training |
+| `--amp-dtype` | `auto` (`bf16` XPU/CPU, `fp16` CUDA) | AMP dtype override |
+| `--no-channels-last` | Flag (`channels_last` on for XPU/CUDA) | Disable channels-last memory format |
 
 ---
 

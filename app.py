@@ -1,4 +1,5 @@
 import os
+import uuid
 import torch
 import cv2
 import numpy as np
@@ -16,17 +17,29 @@ from database import fetch_diagnostic_records, get_database_stats, delete_diagno
 from reporting import generate_diagnostic_report
 
 def launch_gradio_app(class_model_path, ae_model_path, image_size, norm_transform, device_classifier, device_outlining):
-    # Load models once to keep web app fast
+    # Load models once to keep web app fast (channels_last helps Intel XPU/CUDA convs)
     classifier = DenseNet121TumorClassificationModel(num_classes=4, pretrained=False)
     classifier.load_state_dict(torch.load(class_model_path, map_location=device_classifier))
-    classifier.to(device_classifier).eval()
-    
+    classifier.to(device_classifier)
+    if getattr(device_classifier, 'type', None) in ('xpu', 'cuda'):
+        try:
+            classifier = classifier.to(memory_format=torch.channels_last)
+        except Exception:
+            pass
+    classifier.eval()
+
     autoencoder = None
     if os.path.exists(ae_model_path):
         try:
             autoencoder = EnhancedAutoencoder()
             autoencoder.load_state_dict(torch.load(ae_model_path, map_location=device_outlining))
-            autoencoder.to(device_outlining).eval()
+            autoencoder.to(device_outlining)
+            if getattr(device_outlining, 'type', None) in ('xpu', 'cuda'):
+                try:
+                    autoencoder = autoencoder.to(memory_format=torch.channels_last)
+                except Exception:
+                    pass
+            autoencoder.eval()
             print("Autoencoder weights loaded successfully for localization.")
         except Exception as e:
             print(f"Warning: Failed to load autoencoder weights: {e}")
@@ -40,7 +53,7 @@ def launch_gradio_app(class_model_path, ae_model_path, image_size, norm_transfor
             
         orig_pil = Image.fromarray(input_image).convert('L')
         
-        # Classifier Prediction
+        # Classifier Prediction (built-in XPU/CUDA autocast, no IPEX)
         classify_tensor = transforms.Compose([
             transforms.Resize(image_size),
             transforms.Lambda(advanced_preprocess),
@@ -48,10 +61,22 @@ def launch_gradio_app(class_model_path, ae_model_path, image_size, norm_transfor
             transforms.Lambda(to_float_tensor),
             norm_transform
         ])(orig_pil).unsqueeze(0).to(device_classifier)
-        
-        with torch.no_grad():
+        if getattr(device_classifier, 'type', None) in ('xpu', 'cuda'):
+            try:
+                classify_tensor = classify_tensor.to(memory_format=torch.channels_last)
+            except Exception:
+                pass
+
+        try:
+            from train import _autocast_ctx as _app_autocast
+            _app_ctx = _app_autocast(device_classifier, enabled=getattr(device_classifier, 'type', None) in ('xpu', 'cuda'))
+        except Exception:
+            from contextlib import nullcontext as _app_nc
+            _app_ctx = _app_nc()
+
+        with torch.no_grad(), _app_ctx:
             pred = classifier(classify_tensor)
-            probs = torch.softmax(pred, 1).squeeze(0)
+            probs = torch.softmax(pred.float(), 1).squeeze(0)
             conf, idx = torch.max(probs, 0)
             pred_name = class_map[idx.item()]
             conf = conf.item()
@@ -95,13 +120,24 @@ def launch_gradio_app(class_model_path, ae_model_path, image_size, norm_transfor
                 transforms.ToTensor(),
                 transforms.Lambda(to_float_tensor)
             ])(orig_pil).unsqueeze(0).to(device_outlining)
-            
-            with torch.no_grad():
+            if getattr(device_outlining, 'type', None) in ('xpu', 'cuda'):
+                try:
+                    ae_tensor = ae_tensor.to(memory_format=torch.channels_last)
+                except Exception:
+                    pass
+
+            try:
+                from train import _autocast_ctx as _app_ae_autocast
+                _app_ae_ctx = _app_ae_autocast(device_outlining, enabled=getattr(device_outlining, 'type', None) in ('xpu', 'cuda'))
+            except Exception:
+                from contextlib import nullcontext as _app_ae_nc
+                _app_ae_ctx = _app_ae_nc()
+            with torch.no_grad(), _app_ae_ctx:
                 recon, att = autoencoder(ae_tensor)
                 
-            in_np = ae_tensor.squeeze(0).squeeze(0).cpu().numpy()
-            recon_np = recon.squeeze(0).squeeze(0).cpu().numpy()
-            att_np = att.squeeze(0).squeeze(0).cpu().numpy()
+            in_np = ae_tensor.squeeze(0).squeeze(0).float().cpu().numpy()
+            recon_np = recon.squeeze(0).squeeze(0).float().cpu().numpy()
+            att_np = att.squeeze(0).squeeze(0).float().cpu().numpy()
             
             # Reconstruction error map
             rec_err = np.abs(in_np - recon_np)
@@ -138,9 +174,9 @@ def launch_gradio_app(class_model_path, ae_model_path, image_size, norm_transfor
         else:
             metrics_md = "### 📐 Estimated Tumor Dimensions:\n* No tumor boundary detected for metric estimation."
 
-        # Export Report
+        # Export Report (unique filename per request avoids concurrent-user overwrite)
         os.makedirs("classification_results", exist_ok=True)
-        report_output_path = os.path.join("classification_results", "temp_diagnostic_report.html")
+        report_output_path = os.path.join("classification_results", f"diagnostic_report_{uuid.uuid4().hex[:8]}.html")
         generate_diagnostic_report(
             "uploaded_scan.png", pred_name, conf, metrics,
             orig_pil.resize(image_size), outlined_pil, gradcam_pil,

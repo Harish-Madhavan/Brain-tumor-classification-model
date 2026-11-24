@@ -1,6 +1,6 @@
 import os
 import datetime
-import random
+import uuid
 import io
 import base64
 
@@ -14,8 +14,8 @@ def generate_diagnostic_report(img_path, pred_name, conf, metrics, original_pil,
         img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
         return f"data:image/png;base64,{img_str}"
         
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    report_id = f"{random.randint(1000, 9999)}"
+    timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    report_id = uuid.uuid4().hex[:8].upper()
     filename = os.path.basename(img_path)
     
     original_b64 = pil_to_base64(original_pil)

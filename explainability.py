@@ -38,8 +38,8 @@ class GradCAM:
         score = output[0, class_idx]
         score.backward()
         
-        gradients = self.gradients.cpu().data.numpy()[0]
-        activations = self.activations.cpu().data.numpy()[0]
+        gradients = self.gradients.float().cpu().data.numpy()[0]
+        activations = self.activations.float().cpu().data.numpy()[0]
         
         weights = np.mean(gradients, axis=(1, 2))
         cam = np.zeros(activations.shape[1:], dtype=np.float32)
